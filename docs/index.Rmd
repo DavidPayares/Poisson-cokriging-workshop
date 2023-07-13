@@ -130,6 +130,13 @@ names(lung.diabetes) = c("FIPS", "County", "Yl", "N", "Yd")
 head(lung.diabetes)
 ```
 
+Now, we add the comorbidity cases to our merge dataset. The joint cases help to model the dependence between the two diseases.
+
+```{r}
+# Observed cases comordbidity
+lung.diabetes$Yld <- comorbidity$Counts
+```
+
 Then we estimate the observed risk per 100,000 inhabitants using the observed cases and the population at risk. The observed risk $\mathcal{R}_i$ in each county $i$ is computed from the observed counts $Y_i$ and the population sizes $n_i$
 
 $$\mathcal{R}_i = \frac{Y_i}{n_i} \times 100,000$$
@@ -140,19 +147,14 @@ We can easily calculate the observed risk for lung cancer and diabetes using the
 lung.diabetes$Rl <- lung.diabetes$Yl / lung.diabetes$N * 100000
 # Observed risk diabetes
 lung.diabetes$Rd <- lung.diabetes$Yd / lung.diabetes$N * 100000
+# Comorbidity risk diabetes
+lung.diabetes$Rld <- lung.diabetes$Yld / lung.diabetes$N * 100000
 # Data
 head(lung.diabetes)
 ```
 
-Now, we add the comorbidity cases to our merge dataset. The joint cases help to model the dependence between the two diseases.
 
-```{r}
-# Observed cases comordbidity
-lung.diabetes$Yld <- comorbidity$Counts
-```
-
-
-Then we merge our data with the counties' geometry to create a spatial object
+Finally we merge our data with the counties' geometry to create a spatial object
 
 ```{r}
 ld.sp = merge(counties, lung.diabetes, by = "FIPS")
@@ -213,6 +215,23 @@ We can as well visualize both maps simultaneously. This helps to compare both ma
 
 ```{r }
 leafsync::sync(map.l, map.d)
+```
+We inspect the correlation between the two observed disease risks. 
+
+```{r warning=FALSE}
+cor(ld.sp$Rl, ld.sp$Rd)
+```
+While the linear correlation displays a value of 0.68, this result is misleading as the observed risk is affected by the population sizes, measurement errors and other sources of artifacts. Likewise, correlations might vary from county to county due to the relationship between the lung cancer risk and diabetes risk. To obtain a more robust correlation measure, tailored specifically for the distribution of the observed cases, we employ the Bivariate correlation for Poisson variables. 
+
+This correlation estimation method takes into account the intensity parameters of the Poisson distribution and effectively addresses the underlying distributional characteristics of the lung cancer, diabetes, and comorbidity cases. Moreover, it incorporates the impact of varying population sizes, providing a more accurate assessment of the relationship between the diseases.
+
+$$  \rho_{Yi}=  \frac{n_{\alpha \beta i} r_{\alpha \beta}(\mathbf{s}_i)}{\sqrt{n_{\alpha}\mathcal{R}_{\alpha}(\mathbf{s}_i) \cdot n_{\beta} \mathcal{R}_{\beta}(\mathbf{s}_i)}}$$
+
+We compute the Poisson correlation for the observed cases of lung cancer and diabetes for ach county.  We inspect the summarized results.
+
+```{r warning=FALSE}
+rho.y = ld.sp$N * ld.sp$Rld / sqrt(ld.sp$N * ld.sp$Rl * ld.sp$N * ld.sp$Rd)
+summary(rho.y)
 ```
 
 ## 3 Modelling
