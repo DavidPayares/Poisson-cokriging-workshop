@@ -343,7 +343,7 @@ Finally, we evaluate our findings by conducting a simple correlation analysis be
 ```{r warning=FALSE}
 # Compare smoothed rates against observed rates
 plot(smooth$rate.pred, smooth$observed, xlab = 'smoothed risk', ylab = 'observed risk', pch = 20)
-abline(lm(smooth$rate.pred ~ smooth$observed), col = "black", lty = 2)
+abline(lm(smooth$observed ~ smooth$rate.pred), col = "black", lty = 2)
 rho.s =round(cor(smooth$rate.pred, smooth$observed), 3)
 text(40,60, bquote(rho==.(rho.s)))
 ```
@@ -391,7 +391,7 @@ observed.rl = ld.test$Yl/ld.test$N * 100000
 
 # Compare predicted risk against observed risk
 plot(predictions$rate.pred, observed.rl, xlab = 'predicted risk', ylab = 'observed risk', pch = 20)
-abline(lm(predictions$rate.pred ~ observed.rl), col = "black", lty = 2)
+abline(lm(observed.rl ~ predictions$rate.pred), col = "black", lty = 2)
 rho.p =round(cor(predictions$rate.pred, observed.rl), 3)
 text(40,60, bquote(rho==.(rho.p)))
 ```
