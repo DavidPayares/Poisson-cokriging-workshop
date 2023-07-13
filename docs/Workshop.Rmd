@@ -1,0 +1,506 @@
+---
+title: "Poisson Cokring: Lung cancer and diabetes in Minnesota."
+author:
+  - name: '[David Payares-Garcia](https://research.utwente.nl/en/persons/david-enrique-payares-garcia)'
+    affiliation: University of Twente, NL
+output: 
+  html_document:
+    theme: united
+    toc: yes
+    toc_float:
+      collapsed: true
+    code_folding: show
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+In this tutorial, we employ Poisson cokriging to assess the lung cancer risk in Minnesota, United States, based on recorded cases spanning the period from 2016 to 2020 ([NCI Cancer Atlas](https://gis.cancer.gov/canceratlas/)). To enhance the accuracy and precision of the lung cancer risk estimation and smoothing, we incorporate data on diabetes incidence within the same geographical area and time frame as an auxiliary variable ([CDC Diabetes Surveillance System](https://gis.cdc.gov/grasp/diabetes/diabetesatlas-surveillance.html#)).
+
+We demonstrate the application of Poisson cokriging to estimate the lung cancer risk for each county in Minnesota, utilizing the diabetes incidence rates as an auxiliary variable. By utilizing both smoothing and interpolation techniques, we aim to highlight the  capabilities of Poisson cokriging. To facilitate a comprehensive examination of our findings, we generate interactive maps showcasing the disease risk estimates as well as the corresponding prediction uncertainty
+
+## 1 Setting-up
+
+We start by setting our environment.
+
+```{r echo=FALSE, include=TRUE}
+klippy::klippy()
+```
+
+
+```{r}
+path.folder = "C:/Users/PayaresGarciaDE/Desktop/Workshop"
+setwd(path.folder)
+```
+
+Then we install the necessary packages
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+# Libraries
+packages <- c("tigris", "sf" , "gstat", "proxy", "pbapply", "utils", "leaflet", "leafsync", "htmltools")
+# Install packages
+#install.packages(packages)
+# Load packages
+lapply(packages, require, character.only = TRUE)
+```
+
+Finally, we load some functions we need to perform Poisson cokriging
+
+```{r}
+#Functions
+source('./PCK-Functions.R')
+```
+
+## 2 Data
+
+### 2.1 Data loading
+
+We start by loading the data, packages and functions needed for our analysis.
+
+```{r message=FALSE}
+#Data
+lung.cancer = read.csv('./Data/Lung_Mortality_Indiana.csv', sep = ";")
+diabetes  = read.csv('./Data/Diabetes_Incidence_Indiana.csv', sep = ";")
+comorbidity  <-read.csv('./Data/Lung_Diabetes_Comorbidity_Indiana.csv', sep = ";")
+```
+
+Next, we inspect the data
+
+```{r}
+class(lung.cancer)
+```
+
+```{r}
+names(lung.cancer)
+```
+
+We inspect the first rows of ```lung.cancer``` and ```diabetes```. The two data sets contain the age-adjusted rate, number of cases and population at-risk at county level for lung cancer and diabetes between 2016 and 2020.
+
+```{r}
+head(lung.cancer)
+```
+
+```{r}
+head(diabetes)
+```
+
+We also have information about the comorbidity of lung cancer and diabetes. This information refers to the number of lung cancer patients who also had diabetes as concomitant condition. We can inspect the data.
+
+```{r}
+head(comorbidity)
+```
+
+Now we load and plot the Minnesota counties. The R package ```tigris``` allows to easily download the official geographic entities (counties) and store them as an ```sf``` object, a popular object to deal with spatial data-structures. Since the class of the retrieved counties is ```sf```, we can directly project the data into a planar coordinate system. We use the [NAD83 Universal Transverse Mercator (UTM 15)](https://epsg.io/26915) datum. We remove unwanted attributes from our counties as we are only interested in their geometry. 
+
+```{r message=FALSE, results='hide'}
+# Load counties and reproject
+counties = counties(state = 'Indiana') %>%  st_transform(26915)
+
+# Remove unwanted attributes
+counties = counties[,c('GEOID')]
+counties$FIPS = as.numeric(counties$GEOID)
+```
+
+Now we can plot the Minnesota counties
+
+```{r}
+plot(counties$geometry)
+```
+
+
+### 2.2 Data preparation
+
+Now we create a spatial data frame called ```lung.diabetes``` containing the counties IDS, the observed cases for both lung cancer and diabetes, their corresponding risks and the population at-risk. The dataframe is structured as:
+
+* ```FIPS``` : County ID
+* ```County``` : County name
+* ```Yl``` : Lung cancer observed cases
+* ```Yd``` : Diabetes obsereved cases
+* ```Yld``` : Lung Cancer- Diabetes obsereved cases
+* ```N``` :  Population at-risk
+* ```Rl``` : Lung cancer risk per 100,000 inhabitants
+* ```Rd``` : Diabetes risk per 100,000 inhabitants
+
+First, we merge the two non-spatial dataframes corresponding to the lung cancer and diabetes
+
+```{r}
+lung.diabetes = merge(lung.cancer, diabetes, by = "FIPS")
+names(lung.diabetes) = c("FIPS", "County", "Yl", "N", "Yd")
+head(lung.diabetes)
+```
+
+Then we estimate the observed risk per 100,000 inhabitants using the observed cases and the population at risk. The observed risk $\mathcal{R}_i$ in each county $i$ is computed from the observed counts $Y_i$ and the population sizes $n_i$
+
+$$\mathcal{R}_i = \frac{Y_i}{n_i} \times 100,000$$
+We can easily calculate the observed risk for lung cancer and diabetes using the formula above.
+
+```{r}
+# Observed risk lung cancer
+lung.diabetes$Rl <- lung.diabetes$Yl / lung.diabetes$N * 100000
+# Observed risk diabetes
+lung.diabetes$Rd <- lung.diabetes$Yd / lung.diabetes$N * 100000
+# Data
+head(lung.diabetes)
+```
+
+Now, we add the comorbidity cases to our merge dataset. The joint cases help to model the dependence between the two diseases.
+
+```{r}
+# Observed cases comordbidity
+lung.diabetes$Yld <- comorbidity$Counts
+```
+
+
+Then we merge our data with the counties' geometry to create a spatial object
+
+```{r}
+ld.sp = merge(counties, lung.diabetes, by = "FIPS")
+class(ld.sp)
+```
+
+### 2.3 Data visualization
+
+We can visualize the observed risks in an interactive choropleth map using the ```leaflet``` package.
+
+First, we define a color palette subject to the observed risks for lung cancer $\mathcal{R}_\alpha(\mathbf{s}_i)$. Then we define the labels containing some information per each county; we want to display the name of the county, the number of observed cases and the observed risk. Next, we initialize the map by calling the function ```leaflet()```, and we add the basemap (tiles), the counties based on the color palette and labels we defined previously. Finally, we add the legend to our map. 
+
+We obtain the interactive map for the lung cancer risk $\mathcal{R}_\alpha(\mathbf{s}_i)$
+
+```{r }
+# Color palette
+pal.l <- colorNumeric(palette = "magma", domain = lung.diabetes$Rl)
+# Labels with information per county
+labels.l <- sprintf("<strong>%s</strong><br/>Cases: %s <br/>Risk: %s",
+                  ld.sp$County, ld.sp$Yl,  round(ld.sp$Rl, 2)) %>% lapply(htmltools::HTML)
+
+# Leaflet map
+map.l <- leaflet(ld.sp %>% st_transform('+proj=longlat +datum=WGS84')) %>% 
+         addTiles() %>% addProviderTiles(providers$CartoDB.Positron) %>%
+         addPolygons(color = "grey", weight = 1, fillColor = ~pal.l(Rl), fillOpacity = 0.7, 
+                     highlightOptions = highlightOptions(weight = 4), 
+                     label = labels.l, labelOptions = labelOptions(
+                       style = list("font-weight" = "normal", padding = "3px 8px"),
+                       textsize = "15px", direction = "auto")) %>% 
+         addLegend(pal = pal.l, values = ~Rl, opacity = 0.7, title = "Risk", position = "bottomright")
+# Map
+map.l
+```
+
+Similarly, we obtain the map for the risk of diabetes $\mathcal{R}_\beta(\mathbf{s}_i)$
+
+```{r }
+# Color palette
+pal.d <- colorNumeric(palette = "magma", domain = lung.diabetes$Rd)
+# Labels with information per county
+labels.d <- sprintf("<strong>%s</strong><br/>Cases: %s <br/>Risk: %s",
+                  ld.sp$County, ld.sp$Yd,  round(ld.sp$Rd, 2)) %>% lapply(htmltools::HTML)
+
+# Leaflet map
+map.d <- leaflet(ld.sp %>% st_transform('+proj=longlat +datum=WGS84')) %>% 
+         addTiles() %>% addProviderTiles(providers$CartoDB.Positron) %>%
+         addPolygons(color = "grey", weight = 1, fillColor = ~pal.d(Rd), fillOpacity = 0.7, 
+                     highlightOptions = highlightOptions(weight = 4), 
+                     label = labels.d, labelOptions = labelOptions(
+                       style = list("font-weight" = "normal", padding = "3px 8px"),
+                       textsize = "15px", direction = "auto")) %>% 
+         addLegend(pal = pal.d, values = ~Rd, opacity = 0.7, title = "Risk", position = "bottomright")
+# Map
+map.d
+```
+
+We can as well visualize both maps simultaneously. This helps to compare both maps to identify joint patterns such as hotspots. The function ```sync``` from the package ```leafsync``` help us to do so.
+
+```{r }
+leafsync::sync(map.l, map.d)
+```
+
+## 3 Modelling
+
+Here, we explore Poisson cokriging, the model for the bivariate observed data. We study in detail the required steps to fit the model and obtain the disease risk estimates for lung cancer having as auxiliary information the Diabetes incidence rates.
+
+### 3.1. Model
+
+Let $Y_{\alpha i}$ and $Y_{\beta i}$ be the observed cases for lung cancer and diabetes. These cases are Poisson distributed with parameters that are the product between the population sizes $n_{\alpha i}$ and $n_{\beta i}$ and the disease total risk $\mathcal{R}_{\alpha}(\mathbf{s}_i)$ and $\mathcal{R}_{\beta}(\mathbf{s}_i)$ at counties $\mathbf{s}_{i}$, respectively.
+
+
+$$Y_{\alpha i} \mid \mathcal{R}_{\alpha}(\mathbf{s}_i) \sim \text { Poisson}(n_{\alpha i} \cdot \mathcal{R}_{\alpha}(\mathbf{s}_i)) , \; \; \; \; \; \mathcal{R}_{\alpha}(\mathbf{s}_i) =  r_{\alpha}(\mathbf{s}_i) + r_{\alpha \beta}(\mathbf{s}_i)\\
+Y_{\beta i} \mid \mathcal{R}_{\beta}(\mathbf{s}_i) \sim \text { Poisson}(n_{\beta i} \cdot \mathcal{R}_{\beta}(\mathbf{s}_i)) , \; \; \; \; \; \mathcal{R}_{\beta}(\mathbf{s}_i) =  r_{\beta}(\mathbf{s}_i) + r_{\alpha \beta}(\mathbf{s}_i)\\$$
+
+The total risks $\mathcal{R}_{\alpha}(\mathbf{s})$ and $\mathcal{R}_{\beta}(\mathbf{s})$ are positive random fields composed by the individual risk of lung cancer $r_{\alpha}(\mathbf{s}_i)$, the individual risk of diabetes $r_{\beta}(\mathbf{s}_i)$ and the comorbidity risk $r_{\alpha \beta}(\mathbf{s}_i)$. 
+
+### 3.1 Semivariogram estimation
+
+In order to estimate the lung cancer risk using diabetes incidence rates as an auxiliary variable, it is essential to find the spatial structure inherent to our the data. This step is crucial as the application of Poisson cokriging, a geostatistical method, relies on understanding of the underlying covariance structure. By incorporating distance-based weighting, Poisson cokriging leverages the covariance structure to make predictions at given locations.
+
+The semivariograms can be used as well as exploratory tools. They inform about the extent and strength of the spatial correlation.
+
+#### 3.1.1 Direct-semivariograms
+
+To estimate the population-weighted empirical direct semivariogram for the lung cancer and diabetes data, we use
+
+$$\gamma_{\alpha}^{\mathcal{R}}(\mathbf{h}) =\frac{1}{2 \sum\limits_{(i,j) \in N(\mathbf{h})}{w_{i j}}} \sum_{i, j}\left(w_{i j}\left(\frac{Y_{\alpha i}}{n_{\alpha i}}-\frac{Y_{\alpha j}}{n_{\alpha j}}\right)^{2}-(m^{*}_{\alpha} + m^{*}_{\alpha \beta})\right)$$
+where $N(\mathbf{h})$ is the number of observation pairs separated by a distance $\mathbf{h}$ between counties $i$ and $j$, $w_{i j}=\frac{n_{\alpha i} n_{\alpha j}}{n_{\alpha i}+n_{\alpha j}}$, and $m_{\alpha}^{*}=\frac{\sum n_{\alpha i} r_{\alpha}(\mathbf{s}_i)}{\sum n_{\alpha i}}$ and $m_{\alpha \beta}^{*}=\frac{\sum n_{\alpha \beta i} r_{\alpha \beta}(\mathbf{s}_i)}{\sum n_{\alpha \beta i}}$ are the mean estimates of the idividual lung cancer and diabetes risks $r_{\alpha}(\mathbf{s}_i)$ and $r_{\alpha \beta}(\mathbf{s}_i)$, respectively.
+
+The direct-semivariogram of Poisson cokriging is an adjusted version of the traditional semivariogram to account for heterogeneous populations. We use the function ```pck.variogram()``` to estimate the direct-semivariograms for lung cancer and diabetes. As arguments we need to provide the spatial data, the column with disease cases, the column with the population sizes, the population rate , the maximum distance to consider and the number of lags.
+
+We obtain the direct-semivariogram for the lung cancer risk
+
+```{r warning=FALSE}
+var.l = pck.variogram(data = ld.sp, cases = "Yl", pop = "N", pop.rate = 100000, maxd = 150, nbins = 15)
+plot(var.l)
+```
+
+Similarly, we obtain the direct-semivariogram for the diabetes rates
+
+```{r warning=FALSE}
+var.d = pck.variogram(data = ld.sp, cases = "Yd", pop = "N", pop.rate = 100000, maxd = 150, nbins = 15)
+plot(var.d)
+```
+
+#### 3.1.2 Cross-semivariogram
+
+In a similar fashion to the direct-semivariogram, we can estimate the empirircal cross-variogram which encodes the bivariate spatial interaction between two diseases, in our case, the lung cancer and diabetes. The cross-semivariogram capitalizes on the lung cancer, diabetes and comorbidity cases to adjust for the unwanted effect of spatially varying population sizes.
+
+$$\gamma_{\alpha \beta}^{\mathcal{R}}(\mathbf{h}) =\frac{1}{2 \sum\limits_{(i,j) \in N(\mathbf{h})}{w_{\alpha \beta}}} \sum_{i, j}\left(w_{\alpha \beta}\left(\frac{Y_{\alpha i}}{n_{\alpha i}}-\frac{Y_{\alpha j}}{n_{\alpha j}}\right)\left(\frac{Y_{\beta i}}{n_{\beta i}}-\frac{Y_{\beta j}}{n_{\beta j}}\right)-m^{*}_{\alpha \beta}\right)$$
+
+Here, $w_{\alpha \beta} = \frac{n_{\alpha i}n_{\beta j}}{n_{\alpha i} + n_{\beta j}}$ is the number of observation pairs separated by a distance $\mathbf{h}$ between $i$ and $j$ and $m^{*}_{\alpha \beta} =\frac{\sum n_{\alpha \beta i} r_{\alpha \beta}(\mathbf{s}_i)}{\sum n_{ \alpha \beta  i}}$ is the mean estimate of the comordibity risk $r_{\alpha \beta}(\mathbf{s}_i)$.
+
+The computation of the cross-semivariogram is performed using the ```pck.crossvariogram()``` function, which requires the same attributes as the ```pck.variogram()`` function, along with the inclusion of the auxiliary disease and comorbidity cases.
+
+```{r warning=FALSE}
+var.ld = pck.crossvariogram(data = ld.sp, cases.a = "Yl", cases.b = "Yd", cases.ab = "Yld", pop = "N", pop.rate = 100000, maxd = 150, nbins = 12)
+plot(var.ld)
+```
+
+#### 3.1.3 Linear model of coregionalization
+
+The linear model of coregionalization (LMC) is popular in multivariate geostatistics to model the spatial dependence between multiple variables simultaneously. It assumes that the spatial correlation structure can be represented as a linear combination of several underlying spatial structures. The LMC assumes that the coregionalization functions capture the common and specific spatial variation patterns among the variables.
+
+The direct-semivariograms and cross-semivariograms (or covariances and cross-covariances) are computed, and then a LCM is adjusted. The LMC is denifed as
+
+
+$$\mathbf{C}(\mathbf{h}) = \mathbf{B_1}C_1(\mathbf{h}) + \mathbf{B_2}C_2(\mathbf{h}) + ... + \mathbf{B}_kC_k(\mathbf{h})$$
+where each $\mathbf{B}_i$ is a semi-positive definite matrix of size $p$ × $p$ with $p$ being the number of variables. The structures $C_i(\mathbf{h})$ is permisible covariance models. In our model $p = 2$ and $k = 2$.
+
+We adopt a nested covariance structure comprising two covariance structures: the isotropic and exponential covariance functions.
+
+$$
+C_{\exp }(\mathbf{h})=b_1 \exp \left(-\frac{|\mathbf{h}|}{a_1}\right) \quad \quad  C_{\text {sph }}(\mathbf{h})= \begin{cases}b_2\left(1-\frac{3}{2} \frac{|\mathbf{h}|}{a_2}+\frac{1}{2} \frac{|\mathbf{h}|^3}{a_2^3}\right) & \text { for } 0 \leq|\mathbf{h}| \leq a_2 \\ 0 & \text { for }|\mathbf{h}|>a_2\end{cases}
+$$
+with $b_1$ = 5 and $a_1$ = 100 and, $b_2$ = 20 and $a_2$ = 50.
+
+We can easily fit the linear model of coregionalization using the function ```lmc.poisson.cokrige()```. The function requires the estimated empirical direct-semivariograms and cross-semivariograms, the disease cases, the population sizes and an initial covariance structure. 
+
+```{r warning=FALSE}
+# Inital semivariogram values 
+baseline.var =  vgm(5,"Exp", 100, add.to = vgm(20, "Sph", 50))
+# LMC fitting
+lmc.ld <- lmc.poisson.cokrige(var.l ,var.d , var.ld, ld.sp, cases.a = "Yl", cases.b = "Yd",pop = "N"  , baseline.var)
+```
+
+### 3.2 Poisson cokriging
+
+Poisson cokriging is both a predictive method for estimating the lung cancer risk $\mathcal{R}_{\alpha}(\mathbf{s}_i)$ at unsampled locations, and a denoising technique to generate smoothed maps that accentuate the underlying risk.
+
+The spatial interpolation of the lung cancer risk $\mathcal{R}_{\alpha}(\mathbf{s}_0)$ at any county $s_{0}$ is a linear predictor combining the observed lung cases $Y_{\alpha i}$ weighted by population sizes $n_{\alpha i}$ and the observed diabetes cases $Y_{\beta i}$ weighted by population sizes $n_{\beta i}$ located at observed counties in the neighbourhood of the county $s_{0}$. 
+
+$$\mathcal{R}^{*}_{\alpha}(\mathbf{s}_0)= \sum_{i=1}^{k_{\alpha}} \lambda_{\alpha i} \frac{Y_{\alpha i}}{n_{\alpha i}} + \sum_{i=1}^{k_{\beta}} \lambda_{\beta i} \frac{Y_{\beta i}}{n_{\beta i}}$$
+The kriging weights $\lambda_{\alpha i}$ and $\lambda_{\beta i} $ are obtained solving a cokriging system of equations where each county $i$ gets assign a weight based on the covariance fuction defined by the LMC. 
+
+We can estimate the quality of our predictions using the variance of the prediction error
+
+$$\sigma_{\text{PCK}}^{2} \;\;\; = (\sigma^{2}_{\alpha} + \sigma^{2}_{\alpha \beta}) - \sum_{i=1}^{k_{\alpha}}\lambda_{\alpha i}C^{\mathcal{R}}_{\alpha \alpha i 0} - \sum_{i=1}^{k_{\beta}}\lambda_{\beta i}C^{\mathcal{R}}_{\beta \alpha i 0} - \mu_{\alpha}\\$$
+
+Here $\sigma^{2}_{\alpha} + \sigma^{2}_{\alpha \beta}$ are the variance of the lung cancer risk, $C^{\mathcal{R}}$ represents the covariance functions and $\mu_\alpha$ is a Lagrange parameter derived from minimizing the cokriging sytem of equations.
+
+#### 3.2.1 Smoothing
+
+We smooth the lung cancer risk using as ancilliary information the diabetes rates in order to denoise the observations and to attenuate the effect of the population sizes. To accomplish this, we utilize the ```poisson.cokrige()``` function, which simultaneously performs smoothing and prediction. When focusing solely on risk smoothing, we provide the same coordinates as the initial data.
+
+To establish the coordinates for all counties in Minnesota, we utilize the ```st_centroid()``` and ````st_coordinates()`` functions. To ensure uniformity, we convert the coordinate units from meters to kilometers by dividing the values by 1,000. 
+
+```{r warning=FALSE, results='hide'}
+# Locations for predicition
+prediction.loc <- st_coordinates(st_centroid(ld.sp)) / 1000
+```
+
+Then the ```poisson.cokrige()``` function is invoked to smooth the lung cancer risk. The function requires the lung cancer data, diabetes data, the counties where to predict, the observed cases, the population sizes, the estimated LMC and the population rate.
+
+```{r warning=FALSE, results='hide'}
+# Perform smoothing
+smooth <- poisson.cokrige(data.a = ld.sp, data.b = ld.sp, coords.pred = prediction.loc, cases.a = 'Yl',cases.b = 'Yd', cases.ab = 'Yld', pop = 'N', lmc = lmc.ld, pop.rate = 100000)
+```
+
+After applying the function, We obtain the smooth risk, the variance of the prediction error, the residual and the z-score. We can inspect the results. 
+
+```{r warning=FALSE}
+head(smooth)
+```
+
+Finally, we evaluate our findings by conducting a simple correlation analysis between the observed risk (representing noisy observations) and the smoothed risk (indicating denoised observations). Typically, the correlation should be high but never perfect as Poisson cokriging makes sure the noise is filtered out.
+
+```{r warning=FALSE}
+# Compare smoothed rates against observed rates
+plot(smooth$rate.pred, smooth$observed, xlab = 'smoothed risk', ylab = 'observed risk', pch = 20)
+abline(lm(smooth$rate.pred ~ smooth$observed), col = "black", lty = 2)
+rho.s =round(cor(smooth$rate.pred, smooth$observed), 3)
+text(40,60, bquote(rho==.(rho.s)))
+```
+
+#### 3.2.2 Prediction
+
+Poisson cokriging can as well predict risks at counties where data has not ben (yet) observed. Let us assume that we have information about diabetes incidence over all counties of Minnesota, but we only have access to the lung cancer information for a partial set of these counties. Using the information of diabetes and exploiting the spatial cross-correlation between the two diseases, we estimate the lung cancer risk at those counties where information is unavailable.
+
+To accomplish this, we initially divide our data into two distinct sets: the training data, which comprises the observed lung cancer data, and the test data, which represents the unobserved lung cancer information. The training dataset is employed for Poisson cokriging analysis, while the test dataset is used to validate the accuracy of our predictions. We use the function ```sample.int()``` to randomly select lung cancer information for 27 counties (30%). This information is used in the estimation of the lung cancer risk in the other 65 counties (70%) where we do not have lung cancer observations.
+
+
+```{r warning=FALSE}
+# Split data-frame
+set.seed(257)
+sample = sample.int(n = nrow(ld.sp), size = floor(.30 * nrow(ld.sp)), replace = F)
+ld.train =  ld.sp[sample,]
+ld.test =  ld.sp[-sample,]
+```
+
+Since our purpose is predictiing rather than smoothing, we provide the coordinates where we intent to estimate the lung cancer risk, that is, the coordinates of our testing dataset. As before we use the ```st_centroid()``` and ```st_coordinates()`` functions to do so.
+
+```{r warning=FALSE}
+# Locations for predicition
+prediction.loc <- st_coordinates(st_centroid(ld.test)) / 1000
+```
+
+And then we use the ```poisson.cokrige()```  function to predict the risk at the counties without lung cancer information. The function decides to perform either smoothing or prediction based on the provided coordinates. Since the prediction coordinates are different from the coordinates in the data, the prediction procedure is selected.
+
+```{r warning=FALSE, results='hide'}
+# Predict
+predictions <- poisson.cokrige(data.a = ld.train, data.b = ld.sp, coords.pred = prediction.loc, cases.a = 'Yl',cases.b = 'Yd', cases.ab = 'Yld', pop = 'N', lmc = lmc.ld, pop.rate = 100000)
+```
+
+Now we inspect the results
+
+```{r warning=FALSE}
+head(predictions)
+```
+
+We asses the accuracy of the cokriging predictions by comparing them with the observed lung cancer risk. First, we estimate the observed lung cancer risk and then we measure the correlation between the two variables. Similar to the findings in the smoothing section, it is anticipated that a strong correlation will be observed between the predicted risk and the validation risk, albeit not reaching perfect correlation.
+
+```{r warning=FALSE}
+# Compute observed risk 
+observed.rl = ld.test$Yl/ld.test$N * 100000
+
+# Compare predicted risk against observed risk
+plot(predictions$rate.pred, observed.rl, xlab = 'predicted risk', ylab = 'observed risk', pch = 20)
+abline(lm(predictions$rate.pred ~ observed.rl), col = "black", lty = 2)
+rho.p =round(cor(predictions$rate.pred, observed.rl), 3)
+text(40,60, bquote(rho==.(rho.p)))
+```
+
+## 4 Disease mapping
+
+### 4.1 Smoothed risk
+
+The disease smoothed risk estimates and the corresponding prediction uncertainty for each county are provided in the ```rate.pred``` and ```rate.var``` columns of the ```smooth``` data frame. These data are then incorporated into the existing ```ld.sp``` variable, which serves as a spatial object. This integration facilitates the straightforward visualization of the variables, enabling the mapping of disease risk and associated prediction uncertainty.
+
+```{r }
+ld.sp$Smooth.Rl <- smooth$rate.pred
+ld.sp$var <- smooth$rate.var
+```
+
+Subsequently, we the smoothed risk estimates and the prediction variance together.
+
+The map reveals distinct spatial patterns, wherein counties exhibiting higher disease risk are predominantly situated in the northwestern and southwestern regions of Minnesota, while those with lower risk are concentrated in the northern and central areas. Moreover, the accompanying prediction variance map provides insights into the uncertainty associated with the risk estimates, highlighting areas of greater uncertainty and potential variability in disease risk.
+
+```{r }
+# Color palettes
+pal.l <- colorNumeric(palette = "magma", domain = ld.sp$Smooth.Rl)
+pal.v <- colorNumeric(palette = "viridis", domain = ld.sp$var)
+# Labels with information per county
+labels.l <- sprintf("<strong>%s</strong><br/>Cases: %s <br/>Smoothed Risk: %s", ld.sp$County, ld.sp$Yl,  round(ld.sp$Smooth.Rl, 2)) %>% lapply(htmltools::HTML)
+labels.v <- sprintf("<strong>%s</strong> <br/>Variance: %s", ld.sp$County, round(ld.sp$var, 2)) %>% lapply(htmltools::HTML)
+
+# Leaflet maps
+map.l <- leaflet(ld.sp %>% st_transform('+proj=longlat +datum=WGS84')) %>% 
+         addTiles() %>% addProviderTiles(providers$CartoDB.Positron) %>%
+         addPolygons(color = "grey", weight = 1, fillColor = ~pal.l(Smooth.Rl), fillOpacity = 0.7, 
+                     highlightOptions = highlightOptions(weight = 4), 
+                     label = labels.l, labelOptions = labelOptions(
+                       style = list("font-weight" = "normal", padding = "3px 8px"),
+                       textsize = "15px", direction = "auto")) %>% 
+         addLegend(pal = pal.l, values = ~Smooth.Rl, opacity = 0.7, title = "Smooth Risk", position = "bottomright")
+
+map.v <- leaflet(ld.sp %>% st_transform('+proj=longlat +datum=WGS84')) %>% 
+         addTiles() %>% addProviderTiles(providers$CartoDB.Positron) %>%
+         addPolygons(color = "grey", weight = 1, fillColor = ~pal.v(var), fillOpacity = 0.7, 
+                     highlightOptions = highlightOptions(weight = 4), 
+                     label = labels.v, labelOptions = labelOptions(
+                       style = list("font-weight" = "normal", padding = "3px 8px"),
+                       textsize = "15px", direction = "auto")) %>% 
+         addLegend(pal = pal.v, values = ~var, opacity = 0.7, title = "Variance", position = "bottomright")
+
+leafsync::sync(map.l, map.v)
+```
+### 4.2 Predicted risk
+
+We map as well the lung cancer disease risk for the counties we allegedly do not have information. We first add the ```rate.pred``` and ```rate.var``` variables to the spatial dataframe ```ld.test```. 
+
+```{r }
+ld.test$risk.est <- predictions$rate.pred
+ld.test$var <- predictions$rate.var
+```
+
+Finally, we map the predicted lung cancer risk with its corresponding prediction uncertainty. We can add as well the observed lung cancer risk to compared the quality of the predictions.
+
+The maps show how the predicted risk values effectively capture and preserve the spatial patterns inherent in the lung cancer data, accurately representing the range of risk values across the counties. Notably, the application of Poisson cokriging results in the attenuation of disease risk in certain counties, such as Knox, where a higher risk is observed due to the relatively small population size. This elevated risk is primarily driven by the high variance associated with counties characterized by small populations, emphasizing the need to account for population size when interpreting disease risk estimates.
+.
+```{r }
+# Color palettes
+pal.l <- colorNumeric(palette = "magma", domain = ld.test$Rl)
+pal.p <- colorNumeric(palette = "magma", domain = ld.test$risk.est)
+pal.v <- colorNumeric(palette = "viridis", domain = ld.test$var)
+
+
+# Labels with information per county
+labels.l <- sprintf("<strong>%s</strong><br/>Cases: %s <br/>Smoothed Risk: %s", ld.test$County, ld.test$Yl,  round(ld.test$Rl, 2)) %>% lapply(htmltools::HTML)
+labels.p <- sprintf("<strong>%s</strong><br/>Cases: %s <br/>Smoothed Risk: %s", ld.test$County, ld.test$Yl,  round(ld.test$risk.est, 2)) %>% lapply(htmltools::HTML)
+labels.v <- sprintf("<strong>%s</strong> <br/>Variance: %s", ld.test$County, round(ld.test$var, 2)) %>% lapply(htmltools::HTML)
+
+# Leaflet maps
+map.l <- leaflet(ld.test %>% st_transform('+proj=longlat +datum=WGS84')) %>% 
+         addTiles() %>% addProviderTiles(providers$CartoDB.Positron) %>%
+         addPolygons(color = "grey", weight = 1, fillColor = ~pal.l(Rl), fillOpacity = 0.7, 
+                     highlightOptions = highlightOptions(weight = 4), 
+                     label = labels.l, labelOptions = labelOptions(
+                       style = list("font-weight" = "normal", padding = "3px 8px"),
+                       textsize = "15px", direction = "auto")) %>% 
+         addLegend(pal = pal.l, values = ~Rl, opacity = 0.7, title = "Observed Risk", position = "bottomright")
+
+map.p <- leaflet(ld.test %>% st_transform('+proj=longlat +datum=WGS84')) %>% 
+         addTiles() %>% addProviderTiles(providers$CartoDB.Positron) %>%
+         addPolygons(color = "grey", weight = 1, fillColor = ~pal.p(risk.est), fillOpacity = 0.7, 
+                     highlightOptions = highlightOptions(weight = 4), 
+                     label = labels.p, labelOptions = labelOptions(
+                       style = list("font-weight" = "normal", padding = "3px 8px"),
+                       textsize = "15px", direction = "auto")) %>% 
+         addLegend(pal = pal.p, values = ~risk.est, opacity = 0.7, title = "Predicted Risk", position = "bottomright")
+
+map.v <- leaflet(ld.test %>% st_transform('+proj=longlat +datum=WGS84')) %>% 
+         addTiles() %>% addProviderTiles(providers$CartoDB.Positron) %>%
+         addPolygons(color = "grey", weight = 1, fillColor = ~pal.v(var), fillOpacity = 0.7, 
+                     highlightOptions = highlightOptions(weight = 4), 
+                     label = labels.v, labelOptions = labelOptions(
+                       style = list("font-weight" = "normal", padding = "3px 8px"),
+                       textsize = "15px", direction = "auto")) %>% 
+         addLegend(pal = pal.v, values = ~var, opacity = 0.7, title = "Variance", position = "bottomright")
+
+
+leafsync::sync(map.l, map.p, map.v, ncol = 3)
+```
+
+## 5 References
+
+Payares-Garcia D, Osei F, Stein A, Mateu J (2023). A Poisson Cokriging Method for Bivariate Count Data. Spat Stats. 57, September 2023
+
+Monestiez, P, Dubroca, L, Bonnin, E, Durbec, J P, Guinet, C (2006). Geostatistical modelling of spatial distribution of Balaenoptera physalus in the Northwestern Mediterranean Sea from sparse count data and heterogeneous observation efforts. Ecol. Model. 93, 615 -- 628. 
+
+Kawamura K (1973). The structure of Bivariate Poisson Disribution. Kodai Math. 25, 246 -- 256.
