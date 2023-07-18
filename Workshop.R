@@ -288,3 +288,9 @@ map.v <- leaflet(ld.test %>% st_transform('+proj=longlat +datum=WGS84')) %>%
 
 leafsync::sync(map.l, map.p, map.v, ncol = 3)
 
+
+
+la <- st_union(ld.sp)
+plot(la)
+go <- st_sample(la, 50)
+plot(go, add = T, pch = 20)

@@ -1,5 +1,5 @@
 ---
-title: "Poisson Cokring: Lung cancer and diabetes in Minnesota."
+title: "Poisson Cokring: Lung cancer and diabetes in Indiana"
 author:
   - name: '[David Payares-Garcia](https://research.utwente.nl/en/persons/david-enrique-payares-garcia)'
     affiliation: University of Twente, NL
@@ -16,9 +16,9 @@ output:
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
-In this tutorial, we employ Poisson cokriging to assess the lung cancer risk in Minnesota, United States, based on recorded cases spanning the period from 2016 to 2020 ([NCI Cancer Atlas](https://gis.cancer.gov/canceratlas/)). To enhance the accuracy and precision of the lung cancer risk estimation and smoothing, we incorporate data on diabetes incidence within the same geographical area and time frame as an auxiliary variable ([CDC Diabetes Surveillance System](https://gis.cdc.gov/grasp/diabetes/diabetesatlas-surveillance.html#)).
+In this tutorial, we employ Poisson cokriging to assess the lung cancer risk in Indiana, United States, based on recorded cases spanning the period from 2016 to 2020 ([NCI Cancer Atlas](https://gis.cancer.gov/canceratlas/)). To enhance the accuracy and precision of the lung cancer risk estimation and smoothing, we incorporate data on diabetes incidence within the same geographical area and time frame as an auxiliary variable ([CDC Diabetes Surveillance System](https://gis.cdc.gov/grasp/diabetes/diabetesatlas-surveillance.html#)).
 
-We demonstrate the application of Poisson cokriging to estimate the lung cancer risk for each county in Minnesota, utilizing the diabetes incidence rates as an auxiliary variable. By utilizing both smoothing and interpolation techniques, we aim to highlight the  capabilities of Poisson cokriging. To facilitate a comprehensive examination of our findings, we generate interactive maps showcasing the disease risk estimates as well as the corresponding prediction uncertainty
+We demonstrate the application of Poisson cokriging to estimate the lung cancer risk for each county in Indiana, utilizing the diabetes incidence rates as an auxiliary variable. By utilizing both smoothing and interpolation techniques, we aim to highlight the  capabilities of Poisson cokriging. To facilitate a comprehensive examination of our findings, we generate interactive maps showcasing the disease risk estimates as well as the corresponding prediction uncertainty
 
 ## 1 Setting-up
 
@@ -91,7 +91,7 @@ We also have information about the comorbidity of lung cancer and diabetes. This
 head(comorbidity)
 ```
 
-Now we load and plot the Minnesota counties. The R package ```tigris``` allows to easily download the official geographic entities (counties) and store them as an ```sf``` object, a popular object to deal with spatial data-structures. Since the class of the retrieved counties is ```sf```, we can directly project the data into a planar coordinate system. We use the [NAD83 Universal Transverse Mercator (UTM 15)](https://epsg.io/26915) datum. We remove unwanted attributes from our counties as we are only interested in their geometry. 
+Now we load and plot the Indiana counties. The R package ```tigris``` allows to easily download the official geographic entities (counties) and store them as an ```sf``` object, a popular object to deal with spatial data-structures. Since the class of the retrieved counties is ```sf```, we can directly project the data into a planar coordinate system. We use the [NAD83 Universal Transverse Mercator (UTM 15)](https://epsg.io/26915) datum. We remove unwanted attributes from our counties as we are only interested in their geometry. 
 
 ```{r message=FALSE, results='hide'}
 # Load counties and reproject
@@ -102,7 +102,7 @@ counties = counties[,c('GEOID')]
 counties$FIPS = as.numeric(counties$GEOID)
 ```
 
-Now we can plot the Minnesota counties
+Now we can plot the Indiana counties
 
 ```{r}
 plot(counties$geometry)
@@ -225,7 +225,7 @@ While the linear correlation displays a value of 0.68, this result is misleading
 
 This correlation estimation method takes into account the intensity parameters of the Poisson distribution and effectively addresses the underlying distributional characteristics of the lung cancer, diabetes, and comorbidity cases. Moreover, it incorporates the impact of varying population sizes, providing a more accurate assessment of the relationship between the diseases.
 
-$$  \rho_{Yi}=  \frac{n_{\alpha \beta i} r_{\alpha \beta}(\mathbf{s}_i)}{\sqrt{n_{\alpha}\mathcal{R}_{\alpha}(\mathbf{s}_i) \cdot n_{\beta} \mathcal{R}_{\beta}(\mathbf{s}_i)}}$$
+$$  \rho_{Yi}=  \frac{n_{\alpha \beta i} r_{\alpha \beta}(\mathbf{s}_i)}{\sqrt{n_{\alpha i}\mathcal{R}_{\alpha}(\mathbf{s}_i) \cdot n_{\beta i} \mathcal{R}_{\beta}(\mathbf{s}_i)}}$$
 
 We compute the Poisson correlation for the observed cases of lung cancer and diabetes for ach county.  We inspect the summarized results.
 
@@ -325,11 +325,11 @@ Poisson cokriging is both a predictive method for estimating the lung cancer ris
 The spatial interpolation of the lung cancer risk $\mathcal{R}_{\alpha}(\mathbf{s}_0)$ at any county $s_{0}$ is a linear predictor combining the observed lung cases $Y_{\alpha i}$ weighted by population sizes $n_{\alpha i}$ and the observed diabetes cases $Y_{\beta i}$ weighted by population sizes $n_{\beta i}$ located at observed counties in the neighbourhood of the county $s_{0}$. 
 
 $$\mathcal{R}^{*}_{\alpha}(\mathbf{s}_0)= \sum_{i=1}^{k_{\alpha}} \lambda_{\alpha i} \frac{Y_{\alpha i}}{n_{\alpha i}} + \sum_{i=1}^{k_{\beta}} \lambda_{\beta i} \frac{Y_{\beta i}}{n_{\beta i}}$$
-The kriging weights $\lambda_{\alpha i}$ and $\lambda_{\beta i} $ are obtained solving a cokriging system of equations where each county $i$ gets assign a weight based on the covariance fuction defined by the LMC. 
+The kriging weights $\lambda_{\alpha i}$ and $\lambda_{\beta i} $ are obtained solving a cokriging system of equations where each county $i$ gets assign a weight based on the covariance function defined by the LMC. 
 
 We can estimate the quality of our predictions using the variance of the prediction error
 
-$$\sigma_{\text{PCK}}^{2} \;\;\; = (\sigma^{2}_{\alpha} + \sigma^{2}_{\alpha \beta}) - \sum_{i=1}^{k_{\alpha}}\lambda_{\alpha i}C^{\mathcal{R}}_{\alpha \alpha i 0} - \sum_{i=1}^{k_{\beta}}\lambda_{\beta i}C^{\mathcal{R}}_{\beta \alpha i 0} - \mu_{\alpha}\\$$
+$$\sigma_{\text{PCK}}^{2}(\mathbf{s}_0) \;\;\; = (\sigma^{2}_{\alpha} + \sigma^{2}_{\alpha \beta}) - \sum_{i=1}^{k_{\alpha}}\lambda_{\alpha i}C^{\mathcal{R}}_{\alpha \alpha i 0} - \sum_{i=1}^{k_{\beta}}\lambda_{\beta i}C^{\mathcal{R}}_{\beta \alpha i 0} - \mu_{\alpha}\\$$
 
 Here $\sigma^{2}_{\alpha} + \sigma^{2}_{\alpha \beta}$ are the variance of the lung cancer risk, $C^{\mathcal{R}}$ represents the covariance functions and $\mu_\alpha$ is a Lagrange parameter derived from minimizing the cokriging sytem of equations.
 
@@ -337,7 +337,7 @@ Here $\sigma^{2}_{\alpha} + \sigma^{2}_{\alpha \beta}$ are the variance of the l
 
 We smooth the lung cancer risk using as ancilliary information the diabetes rates in order to denoise the observations and to attenuate the effect of the population sizes. To accomplish this, we utilize the ```poisson.cokrige()``` function, which simultaneously performs smoothing and prediction. When focusing solely on risk smoothing, we provide the same coordinates as the initial data.
 
-To establish the coordinates for all counties in Minnesota, we utilize the ```st_centroid()``` and ````st_coordinates()`` functions. To ensure uniformity, we convert the coordinate units from meters to kilometers by dividing the values by 1,000. 
+To establish the coordinates for all counties in Indiana, we utilize the ```st_centroid()``` and ````st_coordinates()`` functions. To ensure uniformity, we convert the coordinate units from meters to kilometers by dividing the values by 1,000. 
 
 ```{r warning=FALSE, results='hide'}
 # Locations for predicition
@@ -369,7 +369,7 @@ text(40,60, bquote(rho==.(rho.s)))
 
 #### 3.2.2 Prediction
 
-Poisson cokriging can as well predict risks at counties where data has not ben (yet) observed. Let us assume that we have information about diabetes incidence over all counties of Minnesota, but we only have access to the lung cancer information for a partial set of these counties. Using the information of diabetes and exploiting the spatial cross-correlation between the two diseases, we estimate the lung cancer risk at those counties where information is unavailable.
+Poisson cokriging can as well predict risks at counties where data has not ben (yet) observed. Let us assume that we have information about diabetes incidence over all counties of Indiana, but we only have access to the lung cancer information for a partial set of these counties. Using the information of diabetes and exploiting the spatial cross-correlation between the two diseases, we estimate the lung cancer risk at those counties where information is unavailable.
 
 To accomplish this, we initially divide our data into two distinct sets: the training data, which comprises the observed lung cancer data, and the test data, which represents the unobserved lung cancer information. The training dataset is employed for Poisson cokriging analysis, while the test dataset is used to validate the accuracy of our predictions. We use the function ```sample.int()``` to randomly select lung cancer information for 27 counties (30%). This information is used in the estimation of the lung cancer risk in the other 65 counties (70%) where we do not have lung cancer observations.
 
@@ -426,9 +426,9 @@ ld.sp$Smooth.Rl <- smooth$rate.pred
 ld.sp$var <- smooth$rate.var
 ```
 
-Subsequently, we the smoothed risk estimates and the prediction variance together.
+Subsequently, we map the smoothed risk estimates and the prediction variance together.
 
-The map reveals distinct spatial patterns, wherein counties exhibiting higher disease risk are predominantly situated in the northwestern and southwestern regions of Minnesota, while those with lower risk are concentrated in the northern and central areas. Moreover, the accompanying prediction variance map provides insights into the uncertainty associated with the risk estimates, highlighting areas of greater uncertainty and potential variability in disease risk.
+The map reveals distinct spatial patterns, wherein counties exhibiting higher disease risk are predominantly situated in the northwestern and southwestern regions of Indiana, while those with lower risk are concentrated in the northern and central areas. Moreover, the accompanying prediction variance map provides insights into the uncertainty associated with the risk estimates, highlighting areas of greater uncertainty and potential variability in disease risk.
 
 ```{r }
 # Color palettes
