@@ -1,7 +1,7 @@
 ---
 title: "Poisson Cokring: Lung cancer and diabetes in Indiana"
 author:
-  - name: '[David Payares-Garcia](https://research.utwente.nl/en/persons/david-enrique-payares-garcia)'
+  - name: '[David Payares-Garcia](https://research.utwente.nl/en/persons/david-enrique-payares-garcia) & Frank Osei'
     affiliation: University of Twente, NL
 output: 
   html_document:
